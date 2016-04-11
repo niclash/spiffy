@@ -4,14 +4,14 @@
 #include <spiffs.h>
 
 #define SPI_FLASH_SEC_SIZE 4096
-#define LOG_PAGE_SIZE       256
+#define LOG_PAGE_SIZE       SPI_FLASH_SEC_SIZE/8
 
 #define MIN_SIZE 64*1024
-#define MAX_SIZE 192*1024
+#define MAX_SIZE 2048*1024
 
 u32_t g_ROMSize = MAX_SIZE;
 
-#define FILEDIR "files"
+#define FILEDIR "filesystem"
 #define ROMNAME "spiff_rom.bin"
 #define ROMERASE 0xFF
 
@@ -20,7 +20,11 @@ static u8_t spiffs_work_buf[LOG_PAGE_SIZE*2];
 static u8_t spiffs_fds[32*4];
 static u8_t spiffs_cache_buf[(LOG_PAGE_SIZE+32)*4];
 
-#define S_DBG /*printf*/
+#ifdef DEBUG
+#define S_DBG(...) do { printf("[Debug] ") ; printf(__VA_ARGS__); } while( 0 );
+#else
+#define S_DBG(...)
+#endif
 
 FILE *rom;
 
@@ -149,9 +153,9 @@ int write_to_spiffs(char *fname, u8_t *data,int size) {
 }
 
 static void test_spiffs() {
-    char buf[12],out[12];
+    uint8_t buf[12],out[12];
 
-    sprintf(buf,"Hi there ");
+    sprintf((char*)buf,"Hi there ");
 
     write_to_spiffs("my_file", buf, 10);
 
@@ -162,18 +166,13 @@ static void test_spiffs() {
     printf("--> %s <--\n", buf);
 }
 
-void add_file(char* fname) {
+void add_file(char *localname, char* spiffs_name) {
 
     int sz;
     u8_t *buf;
     char *path = malloc(1024);
 
-
-    sprintf(path,"%s/%s", FILEDIR,fname);
-
-
-    FILE *fp = fopen(path,"rb");
-
+    FILE *fp = fopen(localname,"rb");
     if (fp == NULL){
         S_DBG("Skipping %s\n",path);
         return;
@@ -187,25 +186,46 @@ void add_file(char* fname) {
         //directory
         return;
     }
-
     buf = malloc(sz);
-
     if(fread(buf,sz,1,fp) != 1) {
-        printf("Unable to read file %s\n",fname);
+        printf("Unable to read file %s\n",spiffs_name);
         return;
     }
-
     S_DBG("%d bytes read from %s\n",sz,fname);
-
-    write_to_spiffs(fname, buf,sz);
-
-    printf("%s added to spiffs (%d bytes)\n",fname,sz);
-
+    write_to_spiffs(spiffs_name, buf,sz);
+    printf("%s added to spiffs (%d bytes)\n",spiffs_name,sz);
     free(buf);
     fclose(fp);
-
 }
 
+void add_dir(char *dirname, char *spiffs_name){
+    
+    DIR *dir = opendir(dirname);
+    if( dir != NULL ){
+        struct dirent *ent;
+        char localname[4096];
+        char spiff[4096];
+        while ((ent = readdir(dir)) != NULL) {
+            strcpy(localname, dirname);
+            strcat(localname, "/");
+            strcat(localname, ent->d_name);
+            strcpy(spiff, spiffs_name);
+            strcat(spiff, "/");
+            strcat(spiff, ent->d_name);
+            if(ent->d_type == DT_DIR) {
+                // Exclude hidden files and current/parent dir entries
+                if( ent->d_name[0] != '.' ) {
+                    add_dir(localname, spiff);
+                }
+            } else if(ent->d_type == DT_REG) {
+                add_file(localname,spiff);
+            }
+        } 
+    } else {
+        printf("Unable to open directory \"%s\"\n", dirname );
+    }
+    closedir(dir);
+}
 
 int main(int argc, char **args) {
 
@@ -237,20 +257,7 @@ int main(int argc, char **args) {
     printf("Creating rom %s of size %d kB\n", ROMNAME, g_ROMSize/1024);
 	printf("For another rom size use \"spiffy <size_kBytes>\"\n");
     printf("Adding files in directory \"%s\"\n", FILEDIR);
-    DIR *dir;
-    struct dirent *ent;
-    if ((dir = opendir (FILEDIR)) != NULL) {
-        /* print all the files and directories within directory */
-        while ((ent = readdir (dir)) != NULL) {
-            add_file(ent->d_name);
-        }
-        closedir (dir);
-    } else {
-        /* could not open directory */
-        printf("Unable to open directory \"%s\"\n", FILEDIR);
-        return EXIT_FAILURE;
-    }
-
+    add_dir(FILEDIR, "");
     fclose(rom);
     exit(EXIT_SUCCESS);
 }
